@@ -220,7 +220,9 @@ class HomeFragment : Fragment() {
         }
 
         binding.cardDetox.setOnClickListener {
-            findNavController().navigate(R.id.action_homeFragment_to_detoxFragment)
+            SubscriptionHelper.checkPremiumAndRun(requireContext()) {
+                findNavController().navigate(R.id.action_homeFragment_to_detoxFragment)
+            }
         }
 
         binding.cardGroup.setOnClickListener {
@@ -248,7 +250,9 @@ class HomeFragment : Fragment() {
         btnDetox = binding.layoutDetoxPreview.btnDetox
 
         btnDetox?.setOnClickListener {
-            findNavController().navigate(R.id.action_homeFragment_to_detoxFragment)
+            SubscriptionHelper.checkPremiumAndRun(requireContext()) {
+                findNavController().navigate(R.id.action_homeFragment_to_detoxFragment)
+            }
         }
     }
 
