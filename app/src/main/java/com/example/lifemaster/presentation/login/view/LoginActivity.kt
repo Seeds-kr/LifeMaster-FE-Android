@@ -1,23 +1,19 @@
 package com.example.lifemaster.presentation.login.view
 
-import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.edit
 import androidx.lifecycle.lifecycleScope
-import com.example.lifemaster.databinding.ActivityLoginBinding
-import com.example.lifemaster.presentation.MainActivity
-import dagger.hilt.android.AndroidEntryPoint
 import androidx.navigation.fragment.NavHostFragment
 import com.example.lifemaster.R
 import com.example.lifemaster.SubscriptionHelper
+import com.example.lifemaster.databinding.ActivityLoginBinding
 import com.example.lifemaster.network.NetworkService
-
 import com.example.lifemaster.network.TokenManager
-import com.example.lifemaster.presentation.total.mypage.model.MeResponse
+import com.example.lifemaster.presentation.MainActivity
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -26,76 +22,144 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class LoginActivity : AppCompatActivity() {
 
-    @Inject lateinit var tokenManager: TokenManager
-    @Inject lateinit var networkService: NetworkService
+    @Inject
+    lateinit var tokenManager: TokenManager
+
+    @Inject
+    lateinit var networkService: NetworkService
+
     private lateinit var binding: ActivityLoginBinding
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
 
-        // 로그인 상태 유지 확인: 저장된 토큰이 있고, 딥링크(콜백)로 들어온 것이 아닐 때 메인으로 이동하기 전 갱신
-        val token = tokenManager.getBearerToken()
-        if (!token.isNullOrBlank() && intent?.data == null) {
-            refreshLoginAndMove(token)
-            return
-        }
-
+        window.clearFlags(
+            android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN
+        )
+        // 먼저 로그인 화면을 정상적으로 표시
         initUi()
+
+        // 비밀번호 재설정 등의 딥링크가 아닌 경우에만 자동 로그인 확인
+        if (intent?.data == null) {
+            val token = tokenManager.getBearerToken()
+
+            if (!token.isNullOrBlank()) {
+                refreshLoginAndMove(token)
+            }
+        }
     }
 
     private fun initUi() {
-        try {
-            binding = ActivityLoginBinding.inflate(layoutInflater)
-            setContentView(binding.root)
-        } catch (t: Throwable) {
-            Log.e("LOGIN_ACTIVITY_STARTUP_CRASH", "LoginActivity inflate/setContentView failed", t)
-            Toast.makeText(this, "초기화 오류: ${t.javaClass.simpleName}", Toast.LENGTH_LONG).show()
-            finish()
-            return
-        }
+        binding = ActivityLoginBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+
         handleDeepLink(intent)
     }
 
     private fun refreshLoginAndMove(token: String) {
         lifecycleScope.launch {
-            val bearer = if (token.startsWith("Bearer ")) token else "Bearer $token"
-            
-            // Me 정보와 쿠폰 정보를 동시에 조회하여 프리미엄 상태를 정확히 파악
-            val meRes = withContext(Dispatchers.IO) { runCatching { networkService.getMe(bearer) } }
-            val couponRes = withContext(Dispatchers.IO) { runCatching { networkService.getMyCoupons(bearer) } }
 
-            meRes.onSuccess { response ->
+            val bearer =
+                if (token.startsWith("Bearer ")) {
+                    token
+                } else {
+                    "Bearer $token"
+                }
+
+            val meResult = withContext(Dispatchers.IO) {
+                runCatching {
+                    networkService.getMe(bearer)
+                }
+            }
+
+            val meResponse = meResult.getOrElse { error ->
+                Log.e(
+                    "LoginActivity",
+                    "자동 로그인 확인 중 네트워크 오류",
+                    error
+                )
+
+                Toast.makeText(
+                    this@LoginActivity,
+                    "네트워크 연결을 확인해주세요.",
+                    Toast.LENGTH_SHORT
+                ).show()
+
+                return@launch
+            }
+
+            if (!meResponse.isSuccessful) {
+                Log.e(
+                    "LoginActivity",
+                    "자동 로그인 실패 code=${meResponse.code()}"
+                )
+
+                // 만료되거나 사용할 수 없는 토큰 제거
+                tokenManager.clear()
+                return@launch
+            }
+
+            val me = meResponse.body()
+
+            if (me == null) {
+                Log.e(
+                    "LoginActivity",
+                    "자동 로그인 실패: 사용자 정보 없음"
+                )
+
+                tokenManager.clear()
+                return@launch
+            }
+
+            SubscriptionHelper.saveAuthUserFromMe(
+                this@LoginActivity,
+                me
+            )
+
+            // 쿠폰 기반 프리미엄 여부 확인
+            val couponResult = withContext(Dispatchers.IO) {
+                runCatching {
+                    networkService.getMyCoupons(bearer)
+                }
+            }
+
+            couponResult.onSuccess { response ->
+
                 if (response.isSuccessful) {
-                    val me = response.body()
-                    if (me != null) {
-                        SubscriptionHelper.saveAuthUserFromMe(this@LoginActivity, me)
-                        
-                        // 쿠폰 정보에서도 프리미엄 여부 확인
-                        couponRes.onSuccess { cRes ->
-                            if (cRes.isSuccessful) {
-                                val coupons = cRes.body()
-                                val isPremiumByCoupon = coupons?.any { 
-                                    it.user != null && SubscriptionHelper.isPremiumPlan(it.user.subscriptionPlan) 
-                                } ?: false
-                                
-                                if (isPremiumByCoupon) {
-                                    SubscriptionHelper.markPremiumActive(this@LoginActivity)
-                                }
-                            }
-                        }
 
-                        startActivity(Intent(this@LoginActivity, MainActivity::class.java))
-                        finish()
-                        return@launch
+                    val coupons = response.body()
+
+                    val isPremiumByCoupon =
+                        coupons?.any { coupon ->
+                            coupon.user != null &&
+                                    SubscriptionHelper.isPremiumPlan(
+                                        coupon.user.subscriptionPlan
+                                    )
+                        } ?: false
+
+                    if (isPremiumByCoupon) {
+                        SubscriptionHelper.markPremiumActive(
+                            this@LoginActivity
+                        )
                     }
                 }
-                tokenManager.clear()
-                initUi()
-            }.onFailure {
-                startActivity(Intent(this@LoginActivity, MainActivity::class.java))
-                finish()
+            }.onFailure { error ->
+                // 쿠폰 조회 실패는 로그인 자체를 막지 않음
+                Log.e(
+                    "LoginActivity",
+                    "쿠폰 정보 조회 실패",
+                    error
+                )
             }
+
+            startActivity(
+                Intent(
+                    this@LoginActivity,
+                    MainActivity::class.java
+                )
+            )
+
+            finish()
         }
     }
 
@@ -105,6 +169,7 @@ class LoginActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+
         setIntent(intent)
         handleDeepLink(intent)
     }
@@ -114,13 +179,27 @@ class LoginActivity : AppCompatActivity() {
         val token = data.getQueryParameter("token") ?: return
 
         val navHostFragment =
-            supportFragmentManager.findFragmentById(R.id.fragment_container_view) as? NavHostFragment
-                ?: return
-        val navController = navHostFragment.navController
+            supportFragmentManager.findFragmentById(
+                R.id.fragment_container_view
+            ) as? NavHostFragment ?: return
 
-        if (navController.currentDestination?.id == R.id.resetPasswordFragment) return
+        val navController =
+            navHostFragment.navController
 
-        val args = Bundle().apply { putString("token", token) }
-        navController.navigate(R.id.resetPasswordFragment, args)
+        if (
+            navController.currentDestination?.id ==
+            R.id.resetPasswordFragment
+        ) {
+            return
+        }
+
+        val args = Bundle().apply {
+            putString("token", token)
+        }
+
+        navController.navigate(
+            R.id.resetPasswordFragment,
+            args
+        )
     }
 }
