@@ -92,7 +92,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
-        codeCacheDir.setReadOnly()
 
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -161,12 +160,12 @@ class MainActivity : AppCompatActivity() {
                     val me = response.body()
                     if (me != null) {
                         SubscriptionHelper.saveAuthUserFromMe(this@MainActivity, me)
-                        
+
                         couponRes.onSuccess { cRes ->
                             if (cRes.isSuccessful) {
                                 val coupons = cRes.body()
-                                val isPremiumByCoupon = coupons?.any { 
-                                    it.user != null && SubscriptionHelper.isPremiumPlan(it.user.subscriptionPlan) 
+                                val isPremiumByCoupon = coupons?.any {
+                                    it.user != null && SubscriptionHelper.isPremiumPlan(it.user.subscriptionPlan)
                                 } ?: false
                                 if (isPremiumByCoupon) {
                                     SubscriptionHelper.markPremiumActive(this@MainActivity)
@@ -184,6 +183,12 @@ class MainActivity : AppCompatActivity() {
         lastUsageTimeBeforeSleep = 0L
         firstUsageTimeAfterWake = null
 
+        // 로그인 직후에는 사용 정보 접근 권한이 없을 수 있으므로 조회하지 않음
+        if (!checkUsageAccessPermission(this)) {
+            sleepViewModel.isMeasured = false
+            return
+        }
+
         // 사용자가 잠든 시간 추적하기
         val usageStatsManager = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager // 1. USAGE_STATS_SERVICE란? UsageStatsManager란?
         val sleepCalendar = Calendar.getInstance().apply {
@@ -200,10 +205,19 @@ class MainActivity : AppCompatActivity() {
 
         val sleepEvent = UsageEvents.Event() // 2.
 
-        val sleepUsageEvents = usageStatsManager.queryEvents( // 3.
-            sleepTrackingStartTime,
-            sleepTrackingEndTime
-        )
+        val sleepUsageEvents = try {
+            usageStatsManager.queryEvents( // 3.
+                sleepTrackingStartTime,
+                sleepTrackingEndTime
+            )
+        } catch (e: SecurityException) {
+            Log.w("SLEEP", "사용 정보 접근 권한이 없어 수면 기록을 조회할 수 없습니다.", e)
+            null
+        }
+        if (sleepUsageEvents == null) {
+            sleepViewModel.isMeasured = false
+            return
+        }
 
         while (sleepUsageEvents.hasNextEvent()) {
             sleepUsageEvents.getNextEvent(sleepEvent)
@@ -232,10 +246,19 @@ class MainActivity : AppCompatActivity() {
         }
 
         val wakeEvent = UsageEvents.Event()
-        val wakeUsageEvents = usageStatsManager.queryEvents(
-            wakeTrackingStartTime,
-            wakeTrackingEndTime
-        ) // 금일 오전 5시 ~ 금일 오전 10시 사이의 이벤트 조회
+        val wakeUsageEvents = try {
+            usageStatsManager.queryEvents(
+                wakeTrackingStartTime,
+                wakeTrackingEndTime
+            ) // 금일 오전 5시 ~ 금일 오전 10시 사이의 이벤트 조회
+        } catch (e: SecurityException) {
+            Log.w("SLEEP", "사용 정보 접근 권한이 없어 기상 기록을 조회할 수 없습니다.", e)
+            null
+        }
+        if (wakeUsageEvents == null) {
+            sleepViewModel.isMeasured = false
+            return
+        }
 
         while (wakeUsageEvents.hasNextEvent()) {
             wakeUsageEvents.getNextEvent(wakeEvent)
@@ -305,7 +328,18 @@ class MainActivity : AppCompatActivity() {
     // 앱 사용 시간을 실시간으로 업데이트하는 함수 (1초마다 실행됨)
     private fun updateUsageStats() {
 
-        val usageStatsMap = getDailyUsageStats(this)
+        // 권한 없이 통계 조회 시 일부 기기에서 예외가 발생하는 것 방지
+        if (!checkUsageAccessPermission(this)) {
+            detoxCommonViewModel.updateTotalAccumulatedAppUsageTimes(0L)
+            return
+        }
+
+        val usageStatsMap = try {
+            getDailyUsageStats(this)
+        } catch (e: SecurityException) {
+            Log.w("MainActivity", "사용 정보 접근 권한이 없어 사용 시간을 조회할 수 없습니다.", e)
+            return
+        }
 
         var totalUsageTime = 0L
 

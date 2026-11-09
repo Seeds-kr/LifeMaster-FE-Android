@@ -165,7 +165,9 @@ interface NetworkService {
 
     // 현재 유저의 To-Do 항목 조회
     @GET("/schedule/todo/member/{memberId}")
-    suspend fun getTodoItems(): List<TodoResponse>
+    suspend fun getTodoItems(
+        @Path("memberId") memberId: Long
+    ): List<TodoResponse>
 
     // 현재 유저의 날짜별 To-Do 조회
     @GET("/schedule/todo/date/{date}")
@@ -210,11 +212,14 @@ interface NetworkService {
 
     // 회원 전체 포모도로 타이머 조회
     @GET("/time/pomodoro/member/{memberId}")
-    suspend fun getAllPomodoroItems(): Response<List<PomodoroResponse>>
+    suspend fun getAllPomodoroItems(
+        @Path("memberId") memberId: Long
+    ): Response<List<PomodoroResponse>>
 
     // 특정 할일에 대한 포모도로 타이머 조회
     @GET("time/pomodoro/member/{memberId}/{todoId}")
     suspend fun getPomodoroItemsByTodo(
+        @Path("memberId") memberId: Long,
         @Path("todoId") todoId: Int
     ): Response<List<PomodoroResponse>>
 

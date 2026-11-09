@@ -3,6 +3,7 @@ package com.example.lifemaster.presentation.login.view
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.util.Patterns
 import android.view.LayoutInflater
 import android.view.View
@@ -20,6 +21,7 @@ import com.example.lifemaster.network.TokenManager
 import com.example.lifemaster.presentation.MainActivity
 import com.example.lifemaster.presentation.total.mypage.model.MeResponse
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import retrofit2.Call
 import retrofit2.Callback
@@ -79,6 +81,8 @@ class LoginEmailFragment : Fragment(R.layout.fragment_login_email) {
         networkService.enterUserLogin(com.example.lifemaster.presentation.login.model.LoginInfo(email, password))
             .enqueue(object : Callback<String> {
                 override fun onResponse(call: Call<String>, res: Response<String>) {
+                    // 수정: 화면에서 이미 벗어난 경우 콜백에서 requireContext()를 호출하지 않도록 함
+                    if (!isAdded) return
                     if (!res.isSuccessful) {
                         toast(parseErrorMessage(res))
                         return
@@ -102,40 +106,48 @@ class LoginEmailFragment : Fragment(R.layout.fragment_login_email) {
                 }
 
                 override fun onFailure(call: Call<String>, t: Throwable) {
+                    if (!isAdded) return
                     toast("네트워크 오류가 발생했어요. 잠시 후 다시 시도해 주세요.")
                 }
             })
     }
 
     private suspend fun fetchAndSaveMeThenMove(loginEmail: String, token: String) {
-        runCatching {
-            networkService.getMe("Bearer $token")
-        }.onSuccess { response ->
-            if (response.isSuccessful) {
-                val me = response.body()
-                saveAuthUser(
-                    token = token,
-                    loginEmail = loginEmail,
-                    me = me
-                )
-            } else {
-                // getMe 실패해도 토큰은 저장된 상태이므로 이메일만 저장하고 진입
-                saveAuthUser(
-                    token = token,
-                    loginEmail = loginEmail,
-                    me = null
-                )
+        try {
+            // 수정: 이미 Bearer가 포함된 토큰에 Bearer를 중복해서 붙이지 않음
+            val bearer = tokenManager.getBearerToken()
+            if (bearer.isNullOrBlank()) {
+                toast("로그인 토큰을 확인할 수 없어요.")
+                return
             }
 
-            moveToMain(token)
-        }.onFailure {
-            // getMe 실패해도 로그인 자체는 성공했으므로 최소 정보 저장 후 진입
+            val response = networkService.getMe(bearer)
+            val me = response.body()
+            val memberId = me?.user?.id ?: me?.id
+
+            // 수정: 사용자 정보 조회 실패 또는 ID 누락 시 메인 화면으로 이동하지 않음
+            if (!response.isSuccessful || me == null || memberId == null || memberId <= 0L) {
+                Log.e("LOGIN_EMAIL", "사용자 조회 실패: HTTP ${response.code()}, memberId=$memberId")
+                tokenManager.clear()
+                toast("사용자 정보를 확인하지 못했어요. 다시 로그인해 주세요.")
+                return
+            }
+
             saveAuthUser(
                 token = token,
                 loginEmail = loginEmail,
-                me = null
+                me = me
             )
             moveToMain(token)
+        } catch (e: CancellationException) {
+            // 수정: 화면 종료로 인한 코루틴 취소를 로그인 실패로 처리하지 않음
+            throw e
+        } catch (e: Exception) {
+            Log.e("LOGIN_EMAIL", "로그인 후 사용자 정보 처리 실패", e)
+            tokenManager.clear()
+            if (isAdded) {
+                toast("사용자 정보를 확인하는 중 오류가 발생했어요. 다시 시도해 주세요.")
+            }
         }
     }
 
