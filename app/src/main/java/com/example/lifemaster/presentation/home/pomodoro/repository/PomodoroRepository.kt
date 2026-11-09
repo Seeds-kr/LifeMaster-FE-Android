@@ -1,3 +1,4 @@
+
 package com.example.lifemaster.presentation.home.pomodoro.repository
 
 import com.example.lifemaster.network.NetworkService
@@ -25,7 +26,10 @@ class PomodoroRepository @Inject constructor(
     }
 
     suspend fun getPomodoroAllItems(): Result<List<PomodoroResponse>> = try {
-        val response = networkService.getAllPomodoroItems()
+        val memberId = tokenManager.getMemberId()
+            ?: return Result.failure(Exception("Member ID is null"))
+
+        val response = networkService.getAllPomodoroItems(memberId = memberId)
         if(response.isSuccessful && response.body() != null) {
             Result.success(response.body()!!)
         } else {
@@ -36,7 +40,13 @@ class PomodoroRepository @Inject constructor(
     }
 
     suspend fun getPomodoroItemsByTodo(todoId: Int): Result<List<PomodoroResponse>> = try {
-        val response = networkService.getPomodoroItemsByTodo(todoId = todoId)
+        val memberId = tokenManager.getMemberId()
+            ?: return Result.failure(Exception("Member ID is null"))
+
+        val response = networkService.getPomodoroItemsByTodo(
+            memberId = memberId,
+            todoId = todoId
+        )
         if(response.isSuccessful && response.body() != null) {
             Result.success(response.body()!!)
         } else {
