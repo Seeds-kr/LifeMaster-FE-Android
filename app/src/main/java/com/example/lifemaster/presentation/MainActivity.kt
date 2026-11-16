@@ -1,3 +1,4 @@
+
 package com.example.lifemaster.presentation
 
 import android.accessibilityservice.AccessibilityServiceInfo
@@ -152,28 +153,42 @@ class MainActivity : AppCompatActivity() {
     private fun fetchMe() {
         val bearer = tokenManager.getBearerToken() ?: return
         lifecycleScope.launch {
-            val meRes = withContext(Dispatchers.IO) { runCatching { networkService.getMe(bearer) } }
-            val couponRes = withContext(Dispatchers.IO) { runCatching { networkService.getMyCoupons(bearer) } }
+            try {
+                val meRes = withContext(Dispatchers.IO) { networkService.getMe(bearer) }
+                if (!meRes.isSuccessful) return@launch
+                val me = meRes.body() ?: return@launch
 
-            meRes.onSuccess { response ->
-                if (response.isSuccessful) {
-                    val me = response.body()
-                    if (me != null) {
-                        SubscriptionHelper.saveAuthUserFromMe(this@MainActivity, me)
+                SubscriptionHelper.saveAuthUserFromMe(this@MainActivity, me)
 
-                        couponRes.onSuccess { cRes ->
-                            if (cRes.isSuccessful) {
-                                val coupons = cRes.body()
-                                val isPremiumByCoupon = coupons?.any {
-                                    it.user != null && SubscriptionHelper.isPremiumPlan(it.user.subscriptionPlan)
-                                } ?: false
-                                if (isPremiumByCoupon) {
-                                    SubscriptionHelper.markPremiumActive(this@MainActivity)
-                                }
-                            }
+                try {
+                    val couponRes = withContext(Dispatchers.IO) {
+                        networkService.getMyCoupons(bearer)
+                    }
+
+                    if (couponRes.isSuccessful) {
+                        val isPremiumByCoupon = couponRes.body()?.any {
+                            it.user != null &&
+                                    SubscriptionHelper.isPremiumPlan(
+                                        it.user.subscriptionPlan
+                                    )
+                        } ?: false
+
+                        if (isPremiumByCoupon) {
+                            SubscriptionHelper.markPremiumActive(
+                                this@MainActivity
+                            )
                         }
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "쿠폰 조회/처리 실패", e)
                 }
+
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MainActivity", "사용자 정보 조회/처리 실패", e)
             }
         }
     }
@@ -234,9 +249,9 @@ class MainActivity : AppCompatActivity() {
             set(Calendar.SECOND, 0)
             set(Calendar.MILLISECOND, 0)
         }
-        val wakeTrackingStartTime = wakeUpCalendar.timeInMillis // 오전 5시
 
-        wakeUpCalendar.add(Calendar.HOUR_OF_DAY, 5) // 오전 10시
+        val wakeTrackingStartTime = wakeUpCalendar.timeInMillis
+        wakeUpCalendar.add(Calendar.HOUR_OF_DAY, 5)
         val wakeTrackingEndTime = wakeUpCalendar.timeInMillis
 
         // 만약 현재 시간이 오전 5시 이전이라면, 아직 기상 전이므로 오늘 날짜의 측정은 유효하지 않음
@@ -268,14 +283,17 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // FIXME: 오전 12:07 시점 앱 다운 + 로그 값 lastUsageTimeBeforeSleep: 1753973258389, firstUsageTimeAfterWake: null
-        // FIXME: 원인 → 자정 이후로 금일 오전 5시 이후부터의 데이터는 존재하지 않기에 null 발생 (= 자정 이후 ~ 오전 5시 이전 앱 들어가면 튕김)
+        val sharedPreference =
+            getSharedPreferences("user_sleep_info", MODE_PRIVATE)
 
-        val sharedPreference = getSharedPreferences("user_sleep_info", MODE_PRIVATE)
+        if (
+            lastUsageTimeBeforeSleep == 0L ||
+            firstUsageTimeAfterWake == null
+        ) {
+            sharedPreference.edit()
+                .putString(LocalDate.now().toString(), "null")
+                .apply()
 
-        if(lastUsageTimeBeforeSleep == 0L || firstUsageTimeAfterWake == null) {
-            // 수면 기록 측정이 제대로 안된 경우
-            sharedPreference.edit().putString(LocalDate.now().toString(), "null").apply()
             sleepViewModel.isMeasured = false
         } else {
             // 수면 기록이 측정이 제대로 된 경우
@@ -344,10 +362,9 @@ class MainActivity : AppCompatActivity() {
         var totalUsageTime = 0L
 
         for (app in requiredApps) {
-            val accumulatedUsageTime = usageStatsMap[app.packageName] ?: 0L
-//            if(accumulatedUsageTime>0) {
-//                Log.d("debugging", "${app.loadLabel(packageManager)}: ${convertLongFormat(accumulatedUsageTime)}")
-//            }
+            val accumulatedUsageTime =
+                usageStatsMap[app.packageName] ?: 0L
+
             totalUsageTime += accumulatedUsageTime
         }
 
@@ -433,7 +450,6 @@ class MainActivity : AppCompatActivity() {
                 )
                 setNegativeButton("취소") { dialog, _ ->
                     dialog.dismiss()
-                    binding.bottomNavigation.selectedItemId = R.id.action_home
                 }
                 setPositiveButton("동의하고 설정하기") { _, _ ->
                     startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -454,7 +470,12 @@ class MainActivity : AppCompatActivity() {
                     val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
                     startActivity(intent)
                 }
-                setCancelable(false)
+
+                setNegativeButton("나중에") { dialog, _ ->
+                    dialog.dismiss()
+                }
+
+                setCancelable(true)
                 create()
             }
             dialog.show()
@@ -495,7 +516,12 @@ class MainActivity : AppCompatActivity() {
                         )
                         startActivity(intent)
                     }
-                    setCancelable(false)
+
+                    setNegativeButton("나중에") { dialog, _ ->
+                        dialog.dismiss()
+                    }
+
+                    setCancelable(true)
                     create().show()
                 }
             }
@@ -512,9 +538,9 @@ class MainActivity : AppCompatActivity() {
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean ->
-        if (!isGranted) {
-            Toast.makeText(this, "알림 권한이 거부되었습니다. 알람이 울리지 않을 수 있습니다.", Toast.LENGTH_SHORT).show()
+        ) { isGranted: Boolean ->
+            if (!isGranted) {
+                Toast.makeText(this, "알림 권한이 거부되었습니다. 알람이 울리지 않을 수 있습니다.", Toast.LENGTH_SHORT).show()
+            }
         }
-    }
 }

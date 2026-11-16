@@ -1,3 +1,4 @@
+
 package com.example.lifemaster.presentation.login.view
 
 import android.content.Intent
@@ -55,46 +56,73 @@ class LoginActivity : AppCompatActivity() {
     }
 
     private fun refreshLoginAndMove(token: String) {
-        lifecycleScope.launch {
-            val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
+        lifecycleScope.launch { val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) {
+                token
+            } else {
+                "Bearer $token"
+            }
 
-            // Me 정보와 쿠폰 정보를 동시에 조회하여 프리미엄 상태를 정확히 파악
-            val meRes = withContext(Dispatchers.IO) { runCatching { networkService.getMe(bearer) } }
-            val couponRes = withContext(Dispatchers.IO) { runCatching { networkService.getMyCoupons(bearer) } }
+            val meRes = withContext(Dispatchers.IO) {
+                runCatching {
+                    networkService.getMe(bearer)
+                }
+            }
 
-            meRes.onSuccess { response ->
-                if (response.isSuccessful) {
-                    val me = response.body()
-                    val memberId = me?.user?.id ?: me?.id
-                    // 수정: 메인에서 사용할 사용자 ID가 확인된 경우에만 이동
-                    if (me != null && memberId != null && memberId > 0L) {
-                        SubscriptionHelper.saveAuthUserFromMe(this@LoginActivity, me)
+            val couponRes = withContext(Dispatchers.IO) {
+                runCatching {
+                    networkService.getMyCoupons(bearer)
+                }
+            }
 
-                        // 쿠폰 정보에서도 프리미엄 여부 확인
-                        couponRes.onSuccess { cRes ->
-                            if (cRes.isSuccessful) {
-                                val coupons = cRes.body()
-                                val isPremiumByCoupon = coupons?.any {
-                                    it.user != null && SubscriptionHelper.isPremiumPlan(it.user.subscriptionPlan)
-                                } ?: false
+            try {
+                val response = meRes.getOrElse { throw it }
 
-                                if (isPremiumByCoupon) {
-                                    SubscriptionHelper.markPremiumActive(this@LoginActivity)
-                                }
+                val me = if (response.isSuccessful) {
+                    response.body()
+                } else {
+                    null
+                }
+
+                val memberId = me?.user?.id ?: me?.id
+
+                if (me == null || memberId == null || memberId <= 0L) {
+                    Log.w("LOGIN_ACTIVITY", "자동 로그인 사용자 조회 실패: HTTP ${response.code()}")
+
+                    tokenManager.clear()
+                    initUi()
+                    return@launch
+                }
+
+                SubscriptionHelper.saveAuthUserFromMe(this@LoginActivity, me)
+
+                couponRes.onSuccess { cRes ->
+                    if (cRes.isSuccessful) {
+                        runCatching {
+                            val isPremiumByCoupon = cRes.body()?.any {
+                                it.user != null &&
+                                        SubscriptionHelper.isPremiumPlan(
+                                            it.user.subscriptionPlan
+                                        )
+                            } ?: false
+
+                            if (isPremiumByCoupon) {
+                                SubscriptionHelper.markPremiumActive(this@LoginActivity)
                             }
+                        }.onFailure {
+                            Log.e("LOGIN_ACTIVITY", "쿠폰 정보 처리 실패", it)
                         }
-
-                        startActivity(Intent(this@LoginActivity, MainActivity::class.java))
-                        finish()
-                        return@launch
                     }
                 }
-                tokenManager.clear()
-                initUi()
-            }.onFailure { throwable ->
-                // 수정: 사용자 조회 예외 시 검증되지 않은 로그인 상태로 메인 화면에 진입하지 않음
-                if (throwable is CancellationException) return@launch
-                Log.e("LOGIN_ACTIVITY", "자동 로그인 사용자 조회 실패", throwable)
+
+                startActivity(Intent(this@LoginActivity, MainActivity::class.java))
+                finish()
+
+            } catch (e: CancellationException) {
+                throw e
+
+            } catch (e: Exception) {
+                Log.e("LOGIN_ACTIVITY", "자동 로그인 처리 중 오류", e)
+
                 tokenManager.clear()
                 initUi()
             }

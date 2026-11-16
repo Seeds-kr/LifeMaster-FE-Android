@@ -1,3 +1,4 @@
+
 package com.example.lifemaster.presentation.login.view
 
 import android.content.Context
@@ -36,6 +37,14 @@ class LoginEmailFragment : Fragment(R.layout.fragment_login_email) {
 
     @Inject lateinit var networkService: NetworkService
     @Inject lateinit var tokenManager: TokenManager
+
+    private var loginCall: Call<String>? = null
+    private var loginInProgress = false
+
+    private fun setLoginInProgress(inProgress: Boolean) {
+        loginInProgress = inProgress
+        _binding?.btnLogin?.isEnabled = !inProgress
+    }
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -78,43 +87,76 @@ class LoginEmailFragment : Fragment(R.layout.fragment_login_email) {
     }
 
     private fun login(email: String, password: String) {
-        networkService.enterUserLogin(com.example.lifemaster.presentation.login.model.LoginInfo(email, password))
-            .enqueue(object : Callback<String> {
+        if (loginInProgress) return
+        setLoginInProgress(true)
+
+        try {
+            loginCall = networkService.enterUserLogin(
+                com.example.lifemaster.presentation.login.model.LoginInfo(email, password)
+            )
+
+            loginCall?.enqueue(object : Callback<String> {
                 override fun onResponse(call: Call<String>, res: Response<String>) {
-                    // 수정: 화면에서 이미 벗어난 경우 콜백에서 requireContext()를 호출하지 않도록 함
-                    if (!isAdded) return
+                    loginCall = null
+
+                    if (!isAdded || _binding == null) return
+
                     if (!res.isSuccessful) {
+                        setLoginInProgress(false)
                         toast(parseErrorMessage(res))
                         return
                     }
 
                     val token = res.body()?.trim().orEmpty()
                     if (token.isBlank()) {
+                        setLoginInProgress(false)
                         toast("로그인 토큰이 비어 있어요.")
                         return
                     }
 
-                    // 예전 토큰 흔적 제거 후 새 토큰 저장
-                    tokenManager.clear()
-                    tokenManager.accessToken = token
-                    tokenManager.refreshFromStorage()
+                    try {
+                        tokenManager.clear()
+                        tokenManager.accessToken = token
+                        tokenManager.refreshFromStorage()
+                    } catch (e: Exception) {
+                        Log.e("LOGIN_EMAIL", "로그인 토큰 저장 실패", e)
+                        setLoginInProgress(false)
+                        toast("로그인 정보를 저장하지 못했어요. 다시 시도해 주세요.")
+                        return
+                    }
 
-                    // 로그인 직후 /users/me 로 실제 사용자 정보 조회
-                    lifecycleScope.launch {
+                    viewLifecycleOwner.lifecycleScope.launch {
                         fetchAndSaveMeThenMove(email, token)
                     }
                 }
 
                 override fun onFailure(call: Call<String>, t: Throwable) {
-                    if (!isAdded) return
+                    loginCall = null
+
+                    if (!isAdded || _binding == null) return
+
+                    setLoginInProgress(false)
+
+                    if (call.isCanceled) return
+
+                    Log.e("LOGIN_EMAIL", "로그인 네트워크 오류", t)
                     toast("네트워크 오류가 발생했어요. 잠시 후 다시 시도해 주세요.")
                 }
             })
+        } catch (e: Exception) {
+            loginCall = null
+            setLoginInProgress(false)
+
+            Log.e("LOGIN_EMAIL", "로그인 요청 시작 실패", e)
+
+            if (isAdded && _binding != null) {
+                toast("로그인 요청 중 오류가 발생했어요.")
+            }
+        }
     }
 
     private suspend fun fetchAndSaveMeThenMove(loginEmail: String, token: String) {
         try {
-            // 수정: 이미 Bearer가 포함된 토큰에 Bearer를 중복해서 붙이지 않음
             val bearer = tokenManager.getBearerToken()
             if (bearer.isNullOrBlank()) {
                 toast("로그인 토큰을 확인할 수 없어요.")
@@ -125,7 +167,6 @@ class LoginEmailFragment : Fragment(R.layout.fragment_login_email) {
             val me = response.body()
             val memberId = me?.user?.id ?: me?.id
 
-            // 수정: 사용자 정보 조회 실패 또는 ID 누락 시 메인 화면으로 이동하지 않음
             if (!response.isSuccessful || me == null || memberId == null || memberId <= 0L) {
                 Log.e("LOGIN_EMAIL", "사용자 조회 실패: HTTP ${response.code()}, memberId=$memberId")
                 tokenManager.clear()
@@ -140,13 +181,17 @@ class LoginEmailFragment : Fragment(R.layout.fragment_login_email) {
             )
             moveToMain(token)
         } catch (e: CancellationException) {
-            // 수정: 화면 종료로 인한 코루틴 취소를 로그인 실패로 처리하지 않음
             throw e
         } catch (e: Exception) {
             Log.e("LOGIN_EMAIL", "로그인 후 사용자 정보 처리 실패", e)
             tokenManager.clear()
-            if (isAdded) {
+
+            if (isAdded && _binding != null) {
                 toast("사용자 정보를 확인하는 중 오류가 발생했어요. 다시 시도해 주세요.")
+            }
+        } finally {
+            if (_binding != null) {
+                setLoginInProgress(false)
             }
         }
     }
@@ -227,6 +272,9 @@ class LoginEmailFragment : Fragment(R.layout.fragment_login_email) {
         Toast.makeText(requireContext(), msg, Toast.LENGTH_SHORT).show()
 
     override fun onDestroyView() {
+        loginCall?.cancel()
+        loginCall = null
+        loginInProgress = false
         super.onDestroyView()
         _binding = null
     }
